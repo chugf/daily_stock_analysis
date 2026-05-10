@@ -299,6 +299,29 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     config=SimpleNamespace(),
                 )
 
+    def test_run_market_review_background_releases_lock_on_runtime_build_failure(self) -> None:
+        if analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        lock_token = object()
+        with patch.object(
+            analysis_endpoint_module,
+            "_build_market_review_runtime",
+            side_effect=RuntimeError("runtime init failed"),
+        ), patch.object(
+            analysis_endpoint_module,
+            "_release_market_review_lock",
+        ) as release_market_review_lock:
+            with self.assertRaises(RuntimeError):
+                analysis_endpoint_module._run_market_review_background(
+                    send_notification=False,
+                    override_region="cn",
+                    lock_token=lock_token,
+                    config=SimpleNamespace(),
+                )
+
+        release_market_review_lock.assert_called_once_with(lock_token)
+
     def test_get_analysis_status_completed_db_snapshot_preserves_zero_change_pct(self) -> None:
         if get_analysis_status is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")

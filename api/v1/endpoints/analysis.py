@@ -121,8 +121,8 @@ def _run_market_review_background(
     from src.core.market_review import run_market_review
 
     runtime_config = config or get_config_dep()
-    notifier, analyzer, search_service = _build_market_review_runtime(runtime_config)
     try:
+        notifier, analyzer, search_service = _build_market_review_runtime(runtime_config)
         report = run_market_review(
             notifier=notifier,
             analyzer=analyzer,
