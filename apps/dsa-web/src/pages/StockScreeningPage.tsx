@@ -112,6 +112,12 @@ const StockScreeningPage: React.FC = () => {
       await alphasiftApi.enable();
       setEnabled(true);
     } catch (err) {
+      try {
+        const status = await alphasiftApi.getStatus();
+        setEnabled(status.enabled);
+      } catch {
+        setEnabled(false);
+      }
       setError(err instanceof Error ? err.message : '开启 AlphaSift 失败');
     } finally {
       setEnabling(false);
