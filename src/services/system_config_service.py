@@ -1649,8 +1649,13 @@ class SystemConfigService:
 
     def _collect_issues(self, items: Sequence[Dict[str, str]], mask_token: str) -> List[Dict[str, Any]]:
         """Collect field-level and cross-field validation issues."""
-        current_map = self._manager.read_config_map()
-        effective_map = dict(current_map)
+        saved_config_map = self._manager.read_config_map()
+        display_config_map = self._build_display_config_map(saved_config_map)
+        runtime_config_map = self._build_runtime_display_config_map(display_config_map)
+        effective_map = {
+            **runtime_config_map,
+            **display_config_map,
+        }
         issues: List[Dict[str, Any]] = []
         updated_map: Dict[str, str] = {}
 
@@ -1660,7 +1665,7 @@ class SystemConfigService:
             field_schema = get_field_definition(key, value)
             is_sensitive = bool(field_schema.get("is_sensitive", False))
 
-            if is_sensitive and value == mask_token and current_map.get(key):
+            if is_sensitive and value == mask_token and saved_config_map.get(key):
                 continue
 
             updated_map[key] = value

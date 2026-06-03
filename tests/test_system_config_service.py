@@ -176,22 +176,24 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
 
         startup_env = {
-            "LITELLM_MODEL": "openai/gpt-4o-mini",
+            "LITELLM_MODEL": "openai/gpt-5",
             "LLM_CHANNELS": "my_proxy",
+            "LLM_MY_PROXY_PROTOCOL": "openai",
             "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
-            "LLM_MY_PROXY_MODELS": "gpt-4o-mini",
+            "LLM_MY_PROXY_API_KEYS": "sk-test-value",
+            "LLM_MY_PROXY_MODELS": "openai/gpt-5",
         }
         with patch.dict(os.environ, startup_env, clear=False):
             payload_before = self.service.get_config(include_schema=True)
             items_before = {item["key"]: item for item in payload_before["items"]}
-            self.assertEqual(items_before["LITELLM_MODEL"]["value"], "openai/gpt-4o-mini")
+            self.assertEqual(items_before["LITELLM_MODEL"]["value"], "openai/gpt-5")
             self.assertFalse(items_before["LITELLM_MODEL"]["raw_value_exists"])
             self.assertEqual(
                 items_before["LLM_MY_PROXY_BASE_URL"]["value"],
                 "https://proxy.example.com/v1",
             )
             self.assertFalse(items_before["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
-            self.assertEqual(items_before["LLM_MY_PROXY_MODELS"]["value"], "gpt-4o-mini")
+            self.assertEqual(items_before["LLM_MY_PROXY_MODELS"]["value"], "openai/gpt-5")
             self.assertFalse(items_before["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
 
             current_version = self.manager.get_config_version()
@@ -210,15 +212,44 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
             payload_after = self.service.get_config(include_schema=True)
             items_after = {item["key"]: item for item in payload_after["items"]}
-            self.assertEqual(items_after["LITELLM_MODEL"]["value"], "openai/gpt-4o-mini")
+            self.assertEqual(items_after["LITELLM_MODEL"]["value"], "openai/gpt-5")
             self.assertFalse(items_after["LITELLM_MODEL"]["raw_value_exists"])
             self.assertEqual(
                 items_after["LLM_MY_PROXY_BASE_URL"]["value"],
                 "https://proxy.example.com/v1",
             )
             self.assertFalse(items_after["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
-            self.assertEqual(items_after["LLM_MY_PROXY_MODELS"]["value"], "gpt-4o-mini")
+            self.assertEqual(items_after["LLM_MY_PROXY_MODELS"]["value"], "openai/gpt-5")
             self.assertFalse(items_after["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
+
+    def test_validate_uses_runtime_injected_llm_channels_for_support_keys(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "my_proxy",
+                "LLM_MY_PROXY_PROTOCOL": "openai",
+                "LLM_MY_PROXY_API_KEYS": "sk-test-value",
+                "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
+                "LLM_MY_PROXY_MODELS": "openai/gpt-5",
+            },
+            clear=False,
+        ):
+            validation = self.service.validate(
+                items=[{"key": "LLM_MY_PROXY_BASE_URL", "value": "not-a-url"}],
+            )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "LLM_MY_PROXY_BASE_URL" and issue["code"] == "invalid_url"
+                for issue in validation["issues"]
+            )
+        )
 
     def test_get_config_switch_type_uses_runtime_env_display_fallback(self) -> None:
         self._rewrite_env(
