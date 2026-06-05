@@ -228,7 +228,20 @@ describe('HomePage', () => {
     expect(screen.getByText('暂无个股记录')).toBeInTheDocument();
   });
 
-  it('loads market review history as a dedicated sidebar collection', async () => {
+  it('shows market review history in the stock bar', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 1,
+      items: [{
+        id: 11,
+        stockCode: 'AAPL',
+        stockName: 'Apple',
+        reportType: 'detailed',
+        sentimentScore: 72,
+        operationAdvice: '观察',
+        analysisCount: 2,
+        lastAnalysisTime: '2026-03-19T08:00:00Z',
+      }],
+    });
     vi.mocked(historyApi.getList).mockImplementation((params: { reportType?: string } = {}) => {
       if (params.reportType === 'market_review') {
         return Promise.resolve({
@@ -253,7 +266,11 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText('大盘复盘历史')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /MARKET/ })).toBeInTheDocument();
+    const newerStockButton = await screen.findByRole('button', { name: /AAPL/ });
+    const marketButton = await screen.findByRole('button', { name: /MARKET/ });
+    expect(newerStockButton.compareDocumentPosition(marketButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText('大盘复盘历史')).not.toBeInTheDocument();
     expect(historyApi.getList).toHaveBeenCalledWith({
       stockCode: 'MARKET',
       reportType: 'market_review',
@@ -877,7 +894,7 @@ describe('HomePage', () => {
     expect(screen.getByRole('table')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '重新分析' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '追问 AI' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '历史趋势' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '历史趋势' })).toBeInTheDocument();
     expect(historyApi.getMarkdown).toHaveBeenCalledWith(marketReviewHistoryReport.meta.id);
 
     expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();
