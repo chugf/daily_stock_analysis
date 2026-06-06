@@ -521,7 +521,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
             refresh.assert_called_once_with(config)
         self.assertEqual(events[:2], ["refresh", "pipeline"])
-        self.assertTrue(pipeline_kwargs["daily_market_context_allow_generate"])
+        self.assertFalse(pipeline_kwargs["daily_market_context_allow_generate"])
         pipeline.run.assert_called_once()
         run_market_review.assert_not_called()
 
@@ -589,17 +589,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("src.core.market_review.run_market_review") as run_market_review:
             main.run_full_analysis(config, args, [])
 
-        self.assertEqual(pipeline_kwargs["daily_market_context_allow_generate"], True)
+        self.assertEqual(pipeline_kwargs["daily_market_context_allow_generate"], False)
         prime_context.assert_has_calls(
             [
-                unittest.mock.call(
-                    config,
-                    pipeline=pipeline,
-                    region="cn",
-                    no_market_review=False,
-                    allow_generate=True,
-                    target_date=target_date,
-                ),
                 unittest.mock.call(
                     config,
                     pipeline=pipeline,
@@ -647,14 +639,26 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("src.core.market_review.run_market_review") as run_market_review:
             main.run_full_analysis(config, args, [])
 
-        self.assertEqual(pipeline_kwargs["daily_market_context_allow_generate"], True)
-        prime_context.assert_called_once_with(
-            config,
-            pipeline=pipeline,
-            region="cn,us",
-            no_market_review=False,
-            allow_generate=True,
-            target_date=target_date,
+        self.assertEqual(pipeline_kwargs["daily_market_context_allow_generate"], False)
+        prime_context.assert_has_calls(
+            [
+                unittest.mock.call(
+                    config,
+                    pipeline=pipeline,
+                    region="cn,us",
+                    no_market_review=False,
+                    allow_generate=False,
+                    target_date=target_date,
+                ),
+                unittest.mock.call(
+                    config,
+                    pipeline=pipeline,
+                    region="cn,us",
+                    no_market_review=False,
+                    allow_generate=False,
+                    target_date=target_date,
+                ),
+            ]
         )
         run_with_lock.assert_called_once()
         self.assertEqual(run_with_lock.call_args.kwargs["override_region"], "cn,us")
@@ -702,8 +706,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertFalse(call_kwargs["persist_market_review_history"])
         self.assertEqual(call_kwargs["target_date"], target_date)
 
-    def test_run_full_analysis_runs_full_market_review_when_preheat_is_runtime_only(self) -> None:
+    def test_run_full_analysis_generates_full_market_review_once_before_stock_analysis(self) -> None:
         args = self._make_args()
+        target_date = date(2026, 3, 26)
         config = self._make_config(
             trading_day_check_enabled=False,
             market_review_enabled=True,
@@ -713,36 +718,52 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         pipeline = MagicMock()
-        pipeline.run.return_value = []
-        pipeline._daily_market_context_service = None
+        events = []
+        pipeline.run.side_effect = lambda **kwargs: events.append("stock-run") or []
         pipeline_kwargs = {}
-        prewarmed_context = SimpleNamespace(
-            source="market_review_runtime",
-            summary="高风险退潮，建议观望。",
-        )
-        service = MagicMock()
-        service.get_context.return_value = prewarmed_context
 
         def build_pipeline(*args, **kwargs):
+            events.append("pipeline")
             pipeline_kwargs.update(kwargs)
             return pipeline
 
+        def run_with_lock(*args, **kwargs):
+            events.append("market-review")
+            return SimpleNamespace(report="完整复盘")
+
         with patch.object(main, "_refresh_stock_index_cache_for_analysis") as refresh, \
              patch("main._compute_trading_day_filter", return_value=([], "cn", False)), \
+             patch("main._resolve_daily_market_context_target_date", return_value=target_date), \
              patch("src.core.pipeline.StockAnalysisPipeline", side_effect=build_pipeline), \
-             patch("src.services.daily_market_context.DailyMarketContextService", return_value=service), \
-             patch("main._run_market_review_with_shared_lock", return_value="完整复盘") as run_with_lock, \
+             patch("main._prime_daily_market_context", return_value="") as prime_context, \
+             patch("main._run_market_review_with_shared_lock", side_effect=run_with_lock) as run_with_lock_mock, \
              patch("src.core.market_review.run_market_review") as run_market_review:
             main.run_full_analysis(config, args, [])
 
-        self.assertEqual(pipeline_kwargs["daily_market_context_allow_generate"], True)
-        self.assertEqual(
-            service.get_context.call_count,
-            2,
+        self.assertEqual(pipeline_kwargs["daily_market_context_allow_generate"], False)
+        self.assertEqual(events, ["pipeline", "market-review", "stock-run"])
+        prime_context.assert_has_calls(
+            [
+                unittest.mock.call(
+                    config,
+                    pipeline=pipeline,
+                    region="cn",
+                    no_market_review=False,
+                    allow_generate=False,
+                    target_date=target_date,
+                ),
+                unittest.mock.call(
+                    config,
+                    pipeline=pipeline,
+                    region="cn",
+                    no_market_review=False,
+                    allow_generate=False,
+                    target_date=target_date,
+                ),
+            ]
         )
-        self.assertEqual(service.get_context.call_args_list[0].kwargs["allow_generate"], True)
-        self.assertEqual(service.get_context.call_args_list[1].kwargs["allow_generate"], False)
-        run_with_lock.assert_called_once()
+        run_with_lock_mock.assert_called_once()
+        self.assertTrue(run_with_lock_mock.call_args.kwargs["return_structured"])
         run_market_review.assert_not_called()
         refresh.assert_called_once_with(config)
         pipeline.run.assert_called_once()

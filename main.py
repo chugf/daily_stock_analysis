@@ -450,9 +450,9 @@ def _compute_trading_day_filter(
 
 def _run_market_review_with_shared_lock(
     config: Config,
-    run_market_review_func: Callable[..., Optional[str]],
+    run_market_review_func: Callable[..., Any],
     **kwargs: Any,
-) -> Optional[str]:
+) -> Any:
     from src.core.market_review_lock import (
         release_market_review_lock,
         try_acquire_market_review_lock,
@@ -549,6 +549,15 @@ def _resolve_daily_market_context_target_date(
     return get_effective_trading_date(market, current_time=current_time)
 
 
+def _market_review_report_text(review_result: Any) -> str:
+    if review_result is None:
+        return ""
+    report = getattr(review_result, "report", None)
+    if isinstance(report, str):
+        return report
+    return review_result if isinstance(review_result, str) else ""
+
+
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
@@ -628,7 +637,7 @@ def run_full_analysis(
             query_id=query_id,
             query_source="cli",
             save_context_snapshot=save_context_snapshot,
-            daily_market_context_allow_generate=should_generate_market_context,
+            daily_market_context_allow_generate=False,
         )
         if should_generate_market_context:
             market_context_summary = _prime_daily_market_context(
@@ -636,9 +645,35 @@ def run_full_analysis(
                 pipeline=pipeline,
                 region=market_review_region,
                 no_market_review=args.no_market_review,
-                allow_generate=should_generate_market_context,
+                allow_generate=False,
                 target_date=daily_market_context_target_date,
             )
+            if not _can_reuse_market_context_for_review(
+                market_context_summary,
+                market_review_region,
+            ):
+                review_result = _run_market_review_with_shared_lock(
+                    config,
+                    run_market_review,
+                    notifier=pipeline.notifier,
+                    analyzer=pipeline.analyzer,
+                    search_service=pipeline.search_service,
+                    send_notification=not args.no_notify,
+                    merge_notification=merge_notification,
+                    override_region=market_review_region,
+                    query_id=query_id,
+                    return_structured=True,
+                )
+                market_report = _market_review_report_text(review_result)
+                if market_report:
+                    market_context_summary = _prime_daily_market_context(
+                        config,
+                        pipeline=pipeline,
+                        region=market_review_region,
+                        no_market_review=args.no_market_review,
+                        allow_generate=False,
+                        target_date=daily_market_context_target_date,
+                    )
 
         # 1. 运行个股分析
         results = pipeline.run(
@@ -656,6 +691,7 @@ def run_full_analysis(
             and config.market_review_enabled
             and not args.no_market_review
             and should_generate_market_context
+            and not market_report
         ):
             logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
             time.sleep(analysis_delay)
@@ -665,6 +701,7 @@ def run_full_analysis(
             config.market_review_enabled
             and not args.no_market_review
             and should_generate_market_context
+            and not market_report
         ):
             can_reuse_market_context = _can_reuse_market_context_for_review(
                 market_context_summary,
