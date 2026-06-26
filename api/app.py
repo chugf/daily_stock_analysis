@@ -16,6 +16,7 @@ FastAPI 应用工厂模块
 """
 
 import asyncio
+import html
 import json
 import logging
 import mimetypes
@@ -35,13 +36,14 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
-# Match src="/assets/foo.js" / href="/assets/foo.css" produced by the
-# vite build. Used by the startup self-check to surface packaging
+# Match Vite asset references in HTML plus lazy-loaded chunks/preloads in
+# emitted JS/CSS. Used by the startup self-check to surface packaging
 # mismatches early (see GitHub #1064 / #1065 / #1050).
 _INDEX_ASSET_REF_PATTERN = re.compile(
-    r"""(?:src|href)\s*=\s*["'](/assets/[^"']+)["']""",
+    r"""["']((?:/assets/|assets/|\./)[^"']+\.(?:js|css|mjs|json|wasm|svg|png|jpg|jpeg|gif|webp|avif|ico|woff2?|ttf)(?:[?#][^"']*)?)["']""",
     re.IGNORECASE,
 )
+_SCANNABLE_FRONTEND_ASSET_SUFFIXES = {".html", ".js", ".mjs", ".css"}
 _SAFE_MISSING_ASSET_MEDIA_TYPES = frozenset({"text/css", "text/javascript"})
 _FRONTEND_INDEX_NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -57,11 +59,74 @@ def _frontend_index_response(static_dir: Path) -> FileResponse:
     )
 
 
+def _frontend_bundle_error_response(missing_assets: List[str]) -> HTMLResponse:
+    missing_items = "\n".join(
+        f"<li><code>{html.escape(asset)}</code></li>"
+        for asset in missing_assets
+    )
+    content = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSA - Frontend Bundle Error</title>
+<style>
+  *{{margin:0;padding:0;box-sizing:border-box}}
+  body{{min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#0a0e17;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,monospace}}
+  .card{{max-width:680px;padding:2.5rem;border:1px solid #1e293b;border-radius:12px;background:#111827}}
+  h1{{font-size:1.25rem;color:#f59e0b;margin-bottom:.75rem}}
+  p{{font-size:.9rem;line-height:1.7;color:#94a3b8;margin-bottom:.5rem}}
+  code{{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:.85rem;color:#67e8f9}}
+  ul{{margin:.75rem 0 1rem 1.25rem;color:#cbd5e1;font-size:.85rem;line-height:1.7}}
+  .hint{{margin-top:1.25rem;padding:.75rem 1rem;border-left:3px solid #38bdf8;background:#0f172a;border-radius:0 6px 6px 0}}
+  .hint p{{color:#bae6fd;margin:0}}
+  a{{color:#38bdf8;text-decoration:none}}
+  a:hover{{text-decoration:underline}}
+</style></head><body><div class="card">
+<h1>Frontend bundle is incomplete</h1>
+<p>API is running, but the Web UI bundle references static files that are missing on disk. Serving the broken bundle would show a blank page.</p>
+<p>Missing asset(s):</p>
+<ul>{missing_items}</ul>
+<p>Rebuild the frontend and restart WebUI:</p>
+<p><code>cd apps/dsa-web &amp;&amp; npm install &amp;&amp; npm run build</code></p>
+<div class="hint"><p>If you only need the API, visit <a href="/docs">/docs</a> for the interactive API documentation.</p></div>
+</div></body></html>"""
+    return HTMLResponse(
+        content=content,
+        status_code=503,
+        headers=_FRONTEND_INDEX_NO_CACHE_HEADERS,
+    )
+
+
+def _strip_frontend_asset_suffix(ref: str) -> str:
+    return ref.split("?", 1)[0].split("#", 1)[0]
+
+
+def _resolve_frontend_asset_ref(
+    static_dir: Path,
+    source_path: Path,
+    ref: str,
+) -> Optional[Path]:
+    clean_ref = _strip_frontend_asset_suffix(ref)
+    if clean_ref.startswith("/assets/"):
+        return static_dir / clean_ref.lstrip("/")
+    if clean_ref.startswith("assets/"):
+        return static_dir / clean_ref
+    if clean_ref.startswith("./"):
+        return source_path.parent / clean_ref[2:]
+    return None
+
+
+def _display_frontend_asset_ref(static_dir: Path, candidate: Path) -> str:
+    try:
+        return "/" + candidate.relative_to(static_dir).as_posix()
+    except ValueError:
+        return candidate.as_posix()
+
+
 def _check_frontend_assets_consistency(static_dir: Path) -> List[str]:
     """
-    Verify that ``index.html`` only references assets that actually exist
-    under ``static_dir``. Returns the list of missing references; an empty
-    list means the bundle is consistent.
+    Verify that ``index.html`` and the referenced bundle only point to assets
+    that actually exist under ``static_dir``. Returns missing references; an
+    empty list means the bundle is consistent.
 
     Logs an actionable error when a mismatch is detected so the root cause
     is visible in ``logs/desktop.log`` instead of surfacing as a silent
@@ -70,26 +135,51 @@ def _check_frontend_assets_consistency(static_dir: Path) -> List[str]:
     index_html = static_dir / "index.html"
     if not index_html.is_file():
         return []
-    try:
-        html = index_html.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        logger.warning("Failed to read %s for asset check: %s", index_html, exc)
-        return []
 
     missing: List[str] = []
-    for match in _INDEX_ASSET_REF_PATTERN.finditer(html):
-        ref = match.group(1)
-        candidate = static_dir / ref.lstrip("/")
-        if not candidate.is_file() and ref not in missing:
-            missing.append(ref)
+    scan_queue: List[Path] = [index_html]
+    scanned: set[Path] = set()
+
+    while scan_queue:
+        source_path = scan_queue.pop(0)
+        try:
+            resolved_source = source_path.resolve()
+        except OSError:
+            resolved_source = source_path
+        if resolved_source in scanned:
+            continue
+        scanned.add(resolved_source)
+
+        try:
+            content = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning("Failed to read %s for asset check: %s", source_path, exc)
+            continue
+
+        for match in _INDEX_ASSET_REF_PATTERN.finditer(content):
+            candidate = _resolve_frontend_asset_ref(
+                static_dir,
+                source_path,
+                match.group(1),
+            )
+            if candidate is None:
+                continue
+            display_ref = _display_frontend_asset_ref(static_dir, candidate)
+            if not candidate.is_file():
+                if display_ref not in missing:
+                    missing.append(display_ref)
+                continue
+            if candidate.suffix.lower() in _SCANNABLE_FRONTEND_ASSET_SUFFIXES:
+                scan_queue.append(candidate)
 
     if missing:
         logger.error(
-            "Frontend bundle is inconsistent: index.html references %d asset(s) "
+            "Frontend bundle is inconsistent: bundle references %d asset(s) "
             "that are not present on disk under %s. This will surface as a "
-            "blank page in the desktop app (see GitHub #1064 / #1065). "
-            "Missing: %s. Re-run the frontend build and make sure the packaging "
-            "step copies the freshly generated static/ directory.",
+            "blank page in the WebUI when the missing entry or lazy-loaded "
+            "chunk is requested (see GitHub #1064 / #1065). Missing: %s. "
+            "Re-run the frontend build and make sure the packaging step copies "
+            "the freshly generated static/ directory.",
             len(missing),
             static_dir,
             ", ".join(missing),
@@ -351,16 +441,19 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # ============================================================
     
     has_frontend = static_dir.exists() and (static_dir / "index.html").exists()
+    missing_frontend_assets: List[str] = []
     
     if has_frontend:
         # Surface bundle inconsistencies as soon as the app starts so that
         # blank-page reports (#1064 / #1065 / #1050) can be diagnosed from
-        # logs/desktop.log instead of via browser devtools.
-        _check_frontend_assets_consistency(static_dir)
+        # logs/desktop.log and the browser instead of via devtools only.
+        missing_frontend_assets = _check_frontend_assets_consistency(static_dir)
 
         @app.get("/", include_in_schema=False)
         async def root():
             """根路由 - 返回前端页面"""
+            if missing_frontend_assets:
+                return _frontend_bundle_error_response(missing_frontend_assets)
             return _frontend_index_response(static_dir)
     else:
         _FRONTEND_NOT_BUILT_HTML = """<!DOCTYPE html>
@@ -513,12 +606,16 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             file_path = _resolve_asset_path(static_dir, full_path) if full_path else None
             if file_path is not None and file_path.is_file():
                 if file_path == (static_dir / "index.html").resolve():
+                    if missing_frontend_assets:
+                        return _frontend_bundle_error_response(missing_frontend_assets)
                     return _frontend_index_response(static_dir)
                 # Issue #520: Explicitly resolve MIME type to avoid
                 # browsers rejecting JS modules served as text/plain.
                 content_type, _ = mimetypes.guess_type(str(file_path))
                 return FileResponse(file_path, media_type=content_type)
 
+            if missing_frontend_assets:
+                return _frontend_bundle_error_response(missing_frontend_assets)
             return _frontend_index_response(static_dir)
     
     return app

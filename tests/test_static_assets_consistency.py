@@ -6,7 +6,7 @@ Both code paths target the blank-page / "Preparing backend..." regression
 captured in GitHub issues #1064, #1065 and #1050: vite produces a fresh
 ``index.html`` that references ``/assets/index-<hash>.js``, but the
 packaging step copies a stale ``static/assets`` directory, so the bundle
-referenced by ``index.html`` does not exist on disk.
+referenced by ``index.html`` or a lazy-loaded route chunk does not exist on disk.
 """
 
 from __future__ import annotations
@@ -73,6 +73,24 @@ def test_check_static_dir_detects_stale_bundle(tmp_path: Path) -> None:
 
     assert "/assets/index-NEW.js" in referenced
     assert sorted(missing) == ["/assets/index-NEW.css", "/assets/index-NEW.js"]
+
+
+def test_check_static_dir_detects_missing_lazy_route_chunk(tmp_path: Path) -> None:
+    """Entry assets exist, but a post-login lazy route chunk is stale/missing."""
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "index-abc.js").write_text(
+        'const loadHome = () => import("./HomePage-MISSING.js");',
+        encoding="utf-8",
+    )
+    (assets_dir / "index-abc.css").write_text("/* css */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    referenced, missing = check_static_assets.check_static_dir(static_dir)
+
+    assert "/assets/HomePage-MISSING.js" in referenced
+    assert missing == ["/assets/HomePage-MISSING.js"]
 
 
 def test_check_static_dir_raises_when_index_missing(tmp_path: Path) -> None:
@@ -148,6 +166,58 @@ def test_backend_startup_check_silent_when_bundle_consistent(
         "Frontend bundle is inconsistent" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_inconsistent_frontend_bundle_returns_visible_diagnostic_page(
+    tmp_path: Path,
+) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    (static_dir / "assets").mkdir(parents=True)
+    _write_index(static_dir, _vite_index("index-MISSING.js", "index-MISSING.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    responses = [
+        client.get("/"),
+        client.get("/login"),
+        client.get("/index.html"),
+    ]
+
+    for response in responses:
+        assert response.status_code == 503
+        assert response.headers["content-type"].startswith("text/html")
+        assert response.headers["cache-control"] == (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        assert "Frontend bundle is incomplete" in response.text
+        assert "blank page" in response.text
+        assert "/assets/index-MISSING.js" in response.text
+        assert "npm run build" in response.text
+
+
+def test_missing_lazy_frontend_chunk_returns_visible_diagnostic_page(
+    tmp_path: Path,
+) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "index-abc.js").write_text(
+        'const loadHome = () => import("./HomePage-MISSING.js");',
+        encoding="utf-8",
+    )
+    (assets_dir / "index-abc.css").write_text("/* css */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+    response = client.get("/")
+
+    assert response.status_code == 503
+    assert "Frontend bundle is incomplete" in response.text
+    assert "/assets/HomePage-MISSING.js" in response.text
 
 
 def test_missing_asset_returns_safe_404_content_types(tmp_path: Path) -> None:

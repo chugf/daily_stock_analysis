@@ -3,13 +3,13 @@
 """
 Static frontend sanity check for the desktop / server packaging pipeline.
 
-Validates that ``index.html`` only references ``/assets/*.js`` and
-``/assets/*.css`` files that actually exist on disk. A mismatch here is the
-most common cause of the "Preparing backend..." / blank-page bug reported in
+Validates that ``index.html`` and the referenced frontend bundle only point
+to asset files that actually exist on disk. A mismatch here is the most
+common cause of the "Preparing backend..." / blank-page bug reported in
 GitHub issues #1064, #1065, #1050: vite re-builds with a new content hash,
 but the packaging step picks up a stale ``static/`` directory or copies the
 files out of sync, so the browser receives a 404 (often as JSON) for the
-main bundle and refuses to execute it.
+main bundle or a lazy-loaded route chunk and refuses to execute it.
 
 Usage:
     python scripts/check_static_assets.py [<static_dir>]
@@ -22,24 +22,49 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
-# Match src="/assets/foo.js" or href="/assets/foo.css", with single or double
-# quotes. Vite emits absolute paths by default (``base: '/'``).
+# Match Vite asset references in HTML plus lazy-loaded chunks/preloads in
+# emitted JS/CSS. Vite usually emits absolute /assets/* references from
+# index.html and relative ./chunk.js or assets/chunk.css references inside
+# the JS bundle.
 _ASSET_PATTERN = re.compile(
-    r"""(?:src|href)\s*=\s*["'](/assets/[^"']+)["']""",
+    r"""["']((?:/assets/|assets/|\./)[^"']+\.(?:js|css|mjs|json|wasm|svg|png|jpg|jpeg|gif|webp|avif|ico|woff2?|ttf)(?:[?#][^"']*)?)["']""",
     re.IGNORECASE,
 )
+_SCANNABLE_ASSET_SUFFIXES = {".html", ".js", ".mjs", ".css"}
 
 
 def _parse_referenced_assets(index_html: str) -> List[str]:
-    """Return the unique list of ``/assets/...`` paths referenced by ``index.html``."""
+    """Return the unique list of asset paths referenced by bundle text."""
     seen: List[str] = []
     for match in _ASSET_PATTERN.finditer(index_html):
         ref = match.group(1)
         if ref not in seen:
             seen.append(ref)
     return seen
+
+
+def _strip_asset_suffix(ref: str) -> str:
+    return ref.split("?", 1)[0].split("#", 1)[0]
+
+
+def _resolve_asset_ref(static_dir: Path, source_path: Path, ref: str) -> Optional[Path]:
+    clean_ref = _strip_asset_suffix(ref)
+    if clean_ref.startswith("/assets/"):
+        return static_dir / clean_ref.lstrip("/")
+    if clean_ref.startswith("assets/"):
+        return static_dir / clean_ref
+    if clean_ref.startswith("./"):
+        return source_path.parent / clean_ref[2:]
+    return None
+
+
+def _display_asset_ref(static_dir: Path, candidate: Path) -> str:
+    try:
+        return "/" + candidate.relative_to(static_dir).as_posix()
+    except ValueError:
+        return candidate.as_posix()
 
 
 def check_static_dir(static_dir: Path) -> Tuple[List[str], List[str]]:
@@ -54,16 +79,39 @@ def check_static_dir(static_dir: Path) -> Tuple[List[str], List[str]]:
     if not index_html_path.is_file():
         raise FileNotFoundError(f"index.html not found under {static_dir}")
 
-    html = index_html_path.read_text(encoding="utf-8", errors="replace")
-    referenced = _parse_referenced_assets(html)
-
+    referenced: List[str] = []
     missing: List[str] = []
-    for ref in referenced:
-        # ref looks like "/assets/index-xxx.js"; strip the leading slash so
-        # it resolves relative to ``static_dir``.
-        candidate = static_dir / ref.lstrip("/")
-        if not candidate.is_file():
-            missing.append(ref)
+    scan_queue: List[Path] = [index_html_path]
+    scanned: set[Path] = set()
+
+    while scan_queue:
+        source_path = scan_queue.pop(0)
+        try:
+            resolved_source = source_path.resolve()
+        except OSError:
+            resolved_source = source_path
+        if resolved_source in scanned:
+            continue
+        scanned.add(resolved_source)
+
+        try:
+            content = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        for ref in _parse_referenced_assets(content):
+            candidate = _resolve_asset_ref(static_dir, source_path, ref)
+            if candidate is None:
+                continue
+            display_ref = _display_asset_ref(static_dir, candidate)
+            if display_ref not in referenced:
+                referenced.append(display_ref)
+            if not candidate.is_file():
+                if display_ref not in missing:
+                    missing.append(display_ref)
+                continue
+            if candidate.suffix.lower() in _SCANNABLE_ASSET_SUFFIXES:
+                scan_queue.append(candidate)
     return referenced, missing
 
 
@@ -96,17 +144,17 @@ def main(argv: List[str]) -> int:
 
     if missing:
         print(
-            "[check_static_assets] ERROR: index.html references assets that "
+            "[check_static_assets] ERROR: frontend bundle references assets that "
             "are not present on disk:",
             file=sys.stderr,
         )
         for ref in missing:
             print(f"  - {ref}", file=sys.stderr)
         print(
-            "[check_static_assets] This produces a blank page on first load "
-            "(see GitHub #1064 / #1065). Re-run the frontend build and make "
-            "sure the packaging step copies the freshly generated static/ "
-            "directory.",
+            "[check_static_assets] This produces a blank page when the missing "
+            "entry or lazy-loaded chunk is requested (see GitHub #1064 / #1065). "
+            "Re-run the frontend build and make sure the packaging step copies "
+            "the freshly generated static/ directory.",
             file=sys.stderr,
         )
         return 1
