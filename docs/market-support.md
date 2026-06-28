@@ -81,17 +81,6 @@ Market Light / 告警：
 
 回滚方式：移除 Portfolio snapshot 的 `data_quality` / `limitations` 扩展，并恢复告警前端/后端对市场枚举的旧边界说明。
 
-## 审核核验与回退说明（Issue #1815）
-
-- 兼容性核验：本次仅收敛 Market Light 告警到 `cn/hk/us`，不更改 provider/model/base_url 持久化链路；`.env.example`、`src/config.py`、`src/core/config_registry.py`、`src/services/system_config_service.py` 对已有 provider/provider-key 语义不做清空或迁移改写；可通过 `tests/test_system_config_service.py` 与 `tests/test_config_env_compat.py` 回归验证。
-- 运行时回退：若需要恢复旧行为，移除 `jp/kr` 对 Market Light 的误用入口（或回退该 PR）即可，保留既有配置路径不变。
-- 合并状态说明：当前提交已处理完与基线的冲突标记，仓库中不含 `<<<<<<<` / `=======` / `>>>>>>>` 片段；变更前后后端/Web/文档链路对齐后完成回归复测。
-- Web UI 变更可追溯证据：`apps/dsa-web/src/components/alerts/__tests__/AlertRuleForm.test.tsx` 覆盖 `market` 场景下仅展示 `cn/hk/us`，且 `apps/dsa-web/src/components/settings/__tests__/SettingsField.test.tsx` 覆盖 `MARKET_REVIEW_REGION` 的自由文本逗号子集输入；受限环境无法稳定产出 UI 截图时，使用以下可复用证据：
-  - `cd apps/dsa-web && npx vitest run src/components/alerts/__tests__/AlertRuleForm.test.tsx src/components/settings/__tests__/SettingsField.test.tsx`
-  - `python -m pytest tests/test_market_light_service.py tests/test_market_light_alerts.py -q`
-  - `python -m pytest tests/test_portfolio_service.py -q`
-  - 运行结果请在 PR 描述中附上上述命令输出路径与结论。
-
 ## 台湾个股 suffix-only MVP（Issue #1772，Refs #1772）
 
 当前阶段支持手动输入台湾股票的 Yahoo Finance 后缀代码，进入既有个股分析、历史保存和基础报告展示链路。TWSE 上市股票使用 `.TW` 后缀，TPEx 上柜（柜买）股票使用 `.TWO` 后缀，二者折叠为同一 `tw` 市场标签。**本次覆盖市场识别（detection）、数据路由层、DecisionSignal/Portfolio/Intelligence 服务层与 API 市场枚举，以及 DecisionSignal/Portfolio 前端市场类型与筛选**；台股股票索引/种子、Web 自动补全与告警（大盘红绿灯）市场放行仍作为后续 PR。对齐 #1718 日韩 MVP 模式。

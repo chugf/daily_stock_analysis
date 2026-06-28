@@ -63,6 +63,11 @@ class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
                 prompt = analyzer._build_review_prompt(MarketOverview(date="2026-02-24"), [])
 
             self.assertIn(f"professional {market_scope_name} analyst", prompt)
+            self.assertIn("## Data Limits", prompt)
+            self.assertIn("### 3. News Catalysts", prompt)
+            self.assertNotIn("### 3. Fund Flows", prompt)
+            self.assertNotIn("### 4. Sector Highlights", prompt)
+            self.assertNotIn("Interpret what turnover, participation, and flow signals imply", prompt)
             self.assertNotIn("professional US/A/H market analyst", prompt)
 
     def test_us_prompt_localizes_strategy_markdown_when_report_language_is_zh(self):
@@ -93,7 +98,12 @@ class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
             self.assertIn(f"专业的{market_scope_name}分析师", prompt)
             self.assertIn(f"结构化的{market_scope_name}大盘复盘报告", prompt)
             self.assertIn(f"## 2026-02-24 {market_scope_name}大盘复盘", prompt)
+            self.assertIn("## 数据边界", prompt)
+            self.assertIn("### 三、消息催化", prompt)
             self.assertIn(strategy_title, prompt)
+            self.assertNotIn("### 三、板块主线", prompt)
+            self.assertNotIn("### 四、资金与情绪", prompt)
+            self.assertNotIn("解读成交额、涨跌停结构、市场宽度", prompt)
             self.assertNotIn("A/H/美股市场分析师", prompt)
 
     def test_cn_prompt_uses_english_shell_when_report_language_is_en(self):

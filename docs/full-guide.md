@@ -223,7 +223,6 @@ daily_stock_analysis/
 > 兼容性说明（Issue #1306/#1391，顺带确认 #1381）：本节相关改动只复用已有历史写入链路展示大盘复盘结果，不新增 API/API 参数、Web 阶段结果独立展示、日报四阶段结构化持久化或日报状态表，不修改 `provider` / `model` / `base_url` 运行时路由与默认模型行为；#1381 同样仅为后端 runtime 复用，不新增配置迁移/清理/回写分支。若 Issue #1381 的 API/Web/日报结构化验收未同步落地，本 PR 不应作为完整交付收口，需留待后续 PR 继续交付。回退路径为发布回滚（可直接 revert 当前提交，或按现有配置回退链路）。兼容验证主要沿用既有约束检查（`requirements.txt`：`litellm` 版本约束）与既有配置回归测试：`tests/test_system_config_service.py`、`tests/test_system_config_api.py`、`tests/test_llm_channel_config.py`、`tests/test_market_review_runtime.py`；官方源参考：[LiteLLM OpenAI-compatible](https://docs.litellm.ai/docs/providers/openai_compatible)、[OpenAI Chat Completion API](https://platform.openai.com/docs/api-reference/chat)。
 > #1391 Phase 2 的结构化检测风险来自 `src/agent/factory.py` 的 `agent_max_steps` / `agent_orchestrator_timeout_s` int 安全兜底，属于配置读取侧的类型兼容增强，不会改写 `litellm_model`、`agent_litellm_model`、`openai_base_url` 或 `LLM_*` 路由状态；回归可复核 `tests/test_agent_pipeline.py::TestAgentConfig::test_build_agent_executor_does_not_mutate_llm_route_config` 与 `tests/test_agent_pipeline.py::TestAgentConfig::test_build_agent_executor_multi_arch_does_not_mutate_llm_route_config`。当配置值非法（如非数字）时，`src.agent.factory` 会记录 warning 并回退到默认值，便于排障与避免误判配置已生效。
 > #1815 Phase 3 的兼容边界说明：本轮仅收敛 JP/KR 与 Market Light 的服务边界，不新增 LLM provider/model/base_url 迁移逻辑，不改写 `.env` 主路由模型持久化语义。`MarketSymbol`、告警枚举与快照 `data_quality/limitations` 调整按已有 `.env` 原子 upsert 语义写入保存配置；未显示提交的键不会被清空。
-> 建议核验（与该 PR 相关）：`tests/test_config_env_compat.py`、`tests/test_system_config_service.py::test_runtime_env_fallback_does_not_persist_llm_fields_on_save`、`tests/test_system_config_service.py::test_runtime_env_fallback_does_not_override_saved_provider_and_base_url_settings`、`tests/test_system_config_service.py::test_import_desktop_env_preserves_hidden_web_settings_keys`、`tests/test_system_config_service.py::test_import_desktop_env_merges_keys_without_deleting_unspecified_values`、`tests/test_system_config_service.py::test_update_alphasift_enable_does_not_rewrite_llm_fields`。
 > 本节仅同步模型/渠道配置清单，不额外引入新的外部 provider / Base URL 兼容约定；兼容语义以当前仓库 `requirements.txt` 依赖约束和相关测试为准，历史回退路径见上述两份文档中“回退/恢复”说明。
 
 | 变量名 | 说明 | 默认值 | 必填 |
@@ -760,12 +759,6 @@ docker run -e SCHEDULE_ENABLED=true -e SCHEDULE_RUN_IMMEDIATELY=false ...
 > - `src/config.py`、`src/core/config_registry.py`、`src/services/system_config_service.py` 的改动仅是配置语义扩展，不改 `provider`/`model`/`base_url` 的运行时路由，也不触发 provider/model/base URL 迁移或清理逻辑。
 > - 本轮实际受控配置项：`MARKET_REVIEW_REGION`、`MARKET_REVIEW_COLOR_SCHEME`；`LITELLM_MODEL`、`AGENT_LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`VISION_MODEL`、`OPENAI_BASE_URL` 等旧值保持原子 upsert 语义，不会在更新其他字段时被静默清空或覆盖。
 > - 旧值回退策略：先恢复备份 `MARKET_REVIEW_REGION` 与配置文件即可回到旧边界，未提交的模型/路由键保留原值；必要时 `revert` PR 并按 `.env` 备份完成回退。
-> - 合并状态：当前提交已去除未决合并冲突标记，当前工作树无 `<<<<<<<` / `=======` / `>>>>>>>` 残留；请在回归验证后按上述回退路径处理。
-> - 兼容检测项：`tests/test_market_light_service.py`（Market Light 市场枚举范围）、`tests/test_market_light_alerts.py`（JP/KR 告警拒绝链路）、`tests/test_portfolio_service.py`（JP/KR 快照 `data_quality` 限制）、`tests/test_system_config_service.py`（provider/model/base_url 配置兼容与回退）、`tests/test_config_env_compat.py`（配置源回退语义）。
-> - 官方依据：LiteLLM OpenAI-compatible <https://docs.litellm.ai/docs/providers/openai_compatible> 与 OpenAI Chat API <https://platform.openai.com/docs/api-reference/chat>。
-> - PR 可视证据替代：Market Light 下拉与告警范围变化已被 `apps/dsa-web/src/components/alerts/__tests__/AlertRuleForm.test.tsx` 的断言锁定（`日股（jp）`、`韩股（kr）` 在 `market` 选项中不可见）；`MARKET_REVIEW_REGION` 的自由文本逗号子集输入（如 `cn,jp` -> `cn,jp,kr`）已由 `apps/dsa-web/src/components/settings/__tests__/SettingsField.test.tsx` 覆盖。无法提供截图时，可在 PR 描述引用该测试输出、截图路径与命令：
->   - `cd apps/dsa-web && npx vitest run src/components/alerts/__tests__/AlertRuleForm.test.tsx src/components/settings/__tests__/SettingsField.test.tsx`
->   - `cd apps/dsa-web && npm run test -- src/components/alerts/__tests__/AlertRuleForm.test.tsx src/components/settings/__tests__/SettingsField.test.tsx`
 > - 可回滚路径：恢复提交前 `.env` / 配置备份中的 `MARKET_REVIEW_REGION` 与相关运行时变量，或直接 revert 本 PR。
 
 #### 交易日判断（Issue #373）
