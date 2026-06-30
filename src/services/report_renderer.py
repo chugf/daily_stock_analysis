@@ -64,6 +64,23 @@ def _clean_sniper_value(val: Any) -> str:
     return s
 
 
+def _format_text(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    text = str(value).strip()
+    return text if text else "N/A"
+
+
+def _format_share_count(value: Any) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if amount != amount:
+        return "N/A"
+    return f"{int(amount):,}"
+
+
 def _resolve_templates_dir() -> Path:
     """Resolve template directory relative to project root."""
     config = get_config()
@@ -179,6 +196,35 @@ def render(
                     return line
         return ""
 
+    def tw_institutional_flow(result: AnalysisResult) -> Dict[str, str]:
+        ctx = getattr(result, "fundamental_context", None)
+        if not isinstance(ctx, dict) or ctx.get("market") != "tw":
+            return {}
+
+        block = ctx.get("institution") if isinstance(ctx.get("institution"), dict) else {}
+        if block.get("status") not in ("ok", "available"):
+            return {}
+
+        data = block.get("data") if isinstance(block.get("data"), dict) else {}
+        required = ("foreign_net", "trust_net", "dealer_net", "total_net")
+        if any(data.get(key) is None for key in required):
+            return {}
+
+        cells = {
+            "date": _format_text(data.get("date")),
+            "foreign": _format_share_count(data.get("foreign_net")),
+            "trust": _format_share_count(data.get("trust_net")),
+            "dealer": _format_share_count(data.get("dealer_net")),
+            "total": _format_share_count(data.get("total_net")),
+            "source": _format_text(data.get("source")),
+            "unit": _format_text(data.get("unit")),
+        }
+        if any(cells[key] == "N/A" for key in ("foreign", "trust", "dealer", "total")):
+            return {}
+        if cells["unit"].lower() == "shares":
+            cells["unit"] = labels["tw_institution_unit_shares_label"]
+        return cells
+
     context: Dict[str, Any] = {
         "report_date": report_date,
         "report_timestamp": report_timestamp,
@@ -195,6 +241,7 @@ def render(
         "market_status_line": market_status_line(),
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
+        "tw_institutional_flow": tw_institutional_flow,
         "failed_checks": failed_checks,
         "phase_pack_excerpt": phase_pack_excerpt,
         "decision_signal_excerpt": decision_signal_excerpt,

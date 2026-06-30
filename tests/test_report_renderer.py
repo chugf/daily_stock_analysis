@@ -322,6 +322,34 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("Market Snapshot", out)
         self.assertIn("Volume Ratio", out)
 
+    def test_render_markdown_appends_tw_institution_block(self) -> None:
+        r = _make_result(code="2330.TW", name="台积电")
+        r.fundamental_context = {
+            "market": "tw",
+            "institution": {
+                "status": "ok",
+                "data": {
+                    "foreign_net": -1912490,
+                    "trust_net": 919216,
+                    "dealer_net": 996850,
+                    "total_net": 3576,
+                    "unit": "shares",
+                    "date": "20260629",
+                    "source": "TWSE-T86",
+                },
+            },
+        }
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("三大法人买卖超", out)
+        self.assertIn(
+            "| 20260629 | -1,912,490 | 919,216 | 996,850 | 3,576 | TWSE-T86 | 股 |",
+            out,
+        )
+        self.assertNotIn("capital_flow_signal", out)
+
     def test_render_markdown_collapses_unavailable_chip_structure(self) -> None:
         r = _make_result(
             dashboard={

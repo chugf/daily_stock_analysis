@@ -77,6 +77,16 @@
 
 {{ market_snapshot(result) }}
 
+{% set tw_inst = tw_institutional_flow(result) %}
+{% if tw_inst %}
+### 🏦 {{ labels.tw_institution_heading }}
+
+| {{ labels.report_date_label }} | {{ labels.tw_institution_foreign_net_label }} | {{ labels.tw_institution_trust_net_label }} | {{ labels.tw_institution_dealer_net_label }} | {{ labels.tw_institution_total_net_label }} | {{ labels.source_label }} | {{ labels.tw_institution_unit_label }} |
+|:------:|-------:|-------:|-------:|-------:|:------:|:----:|
+| {{ tw_inst.date }} | {{ tw_inst.foreign }} | {{ tw_inst.trust }} | {{ tw_inst.dealer }} | {{ tw_inst.total }} | {{ tw_inst.source }} | {{ tw_inst.unit }} |
+
+{% endif %}
+
 {% if data_persp %}
 ### 📊 {{ labels.data_perspective_heading }}
 

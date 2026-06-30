@@ -2024,6 +2024,13 @@ class NotificationService(
         return f"{amount:.4f} {suffix}"
 
     @staticmethod
+    def _format_share_count(value: Any) -> str:
+        amount = _safe_float(value)
+        if amount is None or amount != amount:
+            return "N/A"
+        return f"{int(amount):,}"
+
+    @staticmethod
     def _format_text(value: Any) -> str:
         if value is None:
             return "N/A"
@@ -2057,6 +2064,12 @@ class NotificationService(
         growth_block = ctx.get("growth") if isinstance(ctx.get("growth"), dict) else {}
         growth_data = growth_block.get("data") if isinstance(growth_block.get("data"), dict) else {}
 
+        institution: Dict[str, Any] = {}
+        institution_block = ctx.get("institution") if isinstance(ctx.get("institution"), dict) else {}
+        institution_data = institution_block.get("data") if isinstance(institution_block.get("data"), dict) else {}
+        if ctx.get("market") == "tw" and institution_block.get("status") == "ok":
+            institution = institution_data
+
         boards_block = ctx.get("boards") if isinstance(ctx.get("boards"), dict) else {}
         boards_data = boards_block.get("data") if isinstance(boards_block.get("data"), dict) else {}
         sector_top = boards_data.get("top") if isinstance(boards_data.get("top"), list) else []
@@ -2078,6 +2091,7 @@ class NotificationService(
             "financial_report": financial_report,
             "growth": growth_data,
             "dividend": dividend,
+            "institution": institution,
             "belong_boards": belong_boards,
             "sector_top": sector_top,
             "sector_bottom": sector_bottom,
@@ -2098,6 +2112,7 @@ class NotificationService(
 
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
+        self._append_tw_institutional_flow(lines, blocks, labels)
         self._append_related_boards(lines, blocks, labels)
 
     def _append_financial_summary(
@@ -2181,6 +2196,50 @@ class NotificationService(
             (
                 f"| {cells['ttm_cash']} | {cells['ttm_count']} | "
                 f"{cells['ttm_yield']} | {cells['latest_ex']} |"
+            ),
+            "",
+        ])
+
+    def _append_tw_institutional_flow(
+        self,
+        lines: List[str],
+        blocks: Dict[str, Any],
+        labels: Dict[str, str],
+    ) -> None:
+        institution = blocks.get("institution") or {}
+        if not isinstance(institution, dict):
+            return
+        required = ("foreign_net", "trust_net", "dealer_net", "total_net")
+        if any(institution.get(key) is None for key in required):
+            return
+
+        unit = str(institution.get("unit") or "").strip().lower()
+        unit_text = labels["tw_institution_unit_shares_label"] if unit == "shares" else self._format_text(unit)
+        cells = {
+            "date": self._format_text(institution.get("date")),
+            "foreign": self._format_share_count(institution.get("foreign_net")),
+            "trust": self._format_share_count(institution.get("trust_net")),
+            "dealer": self._format_share_count(institution.get("dealer_net")),
+            "total": self._format_share_count(institution.get("total_net")),
+            "source": self._format_text(institution.get("source")),
+            "unit": unit_text,
+        }
+        if any(cells[key] == "N/A" for key in ("foreign", "trust", "dealer", "total")):
+            return
+
+        lines.extend([
+            f"### 🏦 {labels['tw_institution_heading']}",
+            "",
+            (
+                f"| {labels['report_date_label']} | {labels['tw_institution_foreign_net_label']} | "
+                f"{labels['tw_institution_trust_net_label']} | {labels['tw_institution_dealer_net_label']} | "
+                f"{labels['tw_institution_total_net_label']} | {labels['source_label']} | "
+                f"{labels['tw_institution_unit_label']} |"
+            ),
+            "|:------:|-------:|-------:|-------:|-------:|:------:|:----:|",
+            (
+                f"| {cells['date']} | {cells['foreign']} | {cells['trust']} | {cells['dealer']} | "
+                f"{cells['total']} | {cells['source']} | {cells['unit']} |"
             ),
             "",
         ])
